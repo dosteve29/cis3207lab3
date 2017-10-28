@@ -9,9 +9,10 @@
 #include <netdb.h>
 #include <arpa/inet.h>
 #include <sys/wait.h>
+#include <pthread.h>
+#include <semaphore.h>
 
 #define BACKLOG 10
-#define DEFAULT_PORT_STR "22222"
 
 #define EXIT_USAGE_ERROR 1
 #define EXIT_GETADDRINFO_ERROR 2
@@ -23,25 +24,90 @@
 #define DEFAULT_DICTIONARY "words"
 #define DEFAULT_PORT "12345"
 #define TOK_DELIM "\n"
+#define WORKER_COUNT 3
+
+typedef struct{
+    int *buf; //this is the queue 
+    int n; //maximum number of items
+    int front; //first item in the queue
+    int rear; //last item in the queue
+    sem_t mutex; //mutually exclusive access to the queue
+    sem_t slots; //semaphore for available slots
+    sem_t items; //semaphore for available items
+} sbuf_t;
 
 int getlistenfd(char *);
 ssize_t readLine(int fd, void *buffer, size_t n);
 char ** getDict(char *, int * );
+void * serviceClient(void *);
 
 int main(int argc, char ** argv){
     int listenfd; //listen socket descriptor
     int connectedfd; //connected socket descriptor
     struct sockaddr_storage client_addr; //the client address struct
     socklen_t client_addr_size; //size of client address
-    char line[MAX_LINE];
-    ssize_t bytes_read;
-    char client_name[MAX_LINE];
-    char client_port[MAX_LINE];
-    char *port;
-
+    char line[MAX_LINE]; //this is the line read from the client
+    ssize_t bytes_read; //number of bytes read from readLine
+    char client_name[MAX_LINE]; 
+    char client_port[MAX_LINE]; 
+    char *port; //port configuration string
+    char *dict; //dict configuration string
+    
+    //setting the dict and port variables
+    switch(argc){
+        case 1: //there is no dictionary or port argument given by user
+            port = DEFAULT_PORT;
+            dict = DEFAULT_DICTIONARY;
+            break;
+        case 2:
+            port = DEFAULT_PORT;
+            dict = argv[1];
+            break;
+        case 3:
+            port = argv[2];
+            dict = argv[1];
+            break;
+        default:
+            printf("There is error in the number of arguments!\n");
+            exit(0);
+    }
     //make dictionary data structure available to all threads
     int wordsInDict = 0;
-    char ** dictionary = getDict(DEFAULT_DICTIONARY, &wordsInDict);
+    char ** dictionary = getDict(dict, &wordsInDict);
+
+    //create an array of threads
+    pthread_t threadPool[WORKER_COUNT];
+
+    int i;
+    for (i = 0; i < WORKER_COUNT; i++){
+        //Start running the threads
+        pthread_create(&threadPool[i], NULL, &serviceClient, dictionary);
+    }
+
+    //this is the listener socket on the server side
+    listenfd = getlistenfd(port);
+
+    //infinite loop
+    for (;;) {
+        //accept client connection
+        client_addr_size=sizeof(client_addr);
+        if ((connectedfd=accept(listenfd, (struct sockaddr*)&client_addr, &client_addr_size))==-1) {
+            fprintf(stderr, "accept error\n");
+            continue;
+        }
+        if (getnameinfo((struct sockaddr*)&client_addr, client_addr_size,
+                client_name, MAX_LINE, client_port, MAX_LINE, 0)!=0) {
+            fprintf(stderr, "error getting name information about client\n");
+        } else {
+            printf("accepted connection from %s:%s\n", client_name, client_port);
+        }
+        while ((bytes_read=readLine(connectedfd, line, MAX_LINE-1))>0) {
+          printf("just read %s", line);
+          write(connectedfd, line, bytes_read);
+        }
+        printf("connection closed\n");
+        close(connectedfd);
+    }
 }
 
 /*
@@ -142,7 +208,11 @@ ssize_t readLine(int fd, void *buffer, size_t n) {
 //which is updated by pointer wordsInDict
 char ** getDict(char * dictArg, int * wordsInDict){
     //open dictionary file and read as string into buffer
-    FILE * fp = fopen(dictArg, "r"); 
+    FILE * fp;
+    if((fp = fopen(dictArg, "r")) == NULL){ //error checking for file opening
+        printf("There is error opening the file!\n");
+        exit(0);
+    }
     fseek(fp, 0, SEEK_END);
     int fsize = ftell(fp);
     fseek(fp, 0, SEEK_SET);
@@ -177,6 +247,9 @@ char ** getDict(char * dictArg, int * wordsInDict){
         token = strtok(NULL, TOK_DELIM); //get the next token
     }
     tokens[*wordsInDict] = NULL; //last token is null terminator
-    free(buffer);
     return tokens;
+}
+
+void * serviceClient(void * dict){
+    printf("first word: %s\n", ((char **) dict)[0]);
 }
