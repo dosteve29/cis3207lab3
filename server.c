@@ -26,7 +26,7 @@
 #define TOK_DELIM "\n"
 #define WORKER_COUNT 3
 
-typedef struct{
+typedef struct{ //this is the connected socket queue
     int *buf; //this is the queue 
     int n; //maximum number of items
     int front; //first item in the queue
@@ -40,6 +40,9 @@ int getlistenfd(char *);
 ssize_t readLine(int fd, void *buffer, size_t n);
 char ** getDict(char *, int * );
 void * serviceClient(void *);
+void sbuf_init(sbuf_t *sp, int n);
+void sbuf_deinit(sbuf_t *sp);
+void sbuf_insert(sbuf_t *sp, int item);
 
 int main(int argc, char ** argv){
     int listenfd; //listen socket descriptor
@@ -248,6 +251,39 @@ char ** getDict(char * dictArg, int * wordsInDict){
     }
     tokens[*wordsInDict] = NULL; //last token is null terminator
     return tokens;
+}
+
+//From Bryant and O'Hallaron
+//Create an empty, bounded, shared FIFO buffer with n slots
+void sbuf_init(sbuf_t *sp, int n){
+   sp->buf = calloc(n, sizeof(int)); //allocate memory for n int items
+   sp->n = n; 
+   sp->front = sp->rear = 0; //queue is empty if rear and front are equal
+   sem_init(&sp->mutex, 0, 1); //binary semaphore for mutually exclusive access to queue
+   sem_init(&sp->slots, 0, n); //n empty slots initially
+   sem_init(&sp->items, 0, 0); //0 items initially
+}
+
+void sbuf_deinit(sbuf_t *sp){
+    free(sp->buf);
+}
+
+void sbuf_insert(sbuf_t *sp, int item){
+    sem_wait(&sp->slots); //sem_wait is P(). wait for available slot
+    sem_wait(&sp->mutex); //this thread has the lock now
+    sp->buf[(++sp->rear)%(sp->n)] = item; //insert the item
+    sem_post(&sp->mutex); //sem_post is V(). unlock the mutex
+    sem_post(&sp->items); //announce available item
+}
+
+int sbuf_remove(sbuf_t *sp){
+    int item;
+    sem_wait(&sp->items); //wait for available item
+    sem_wait(&sp->mutex); //lock the queue
+    item = sp->buf[(++sp->front)%(sp->n)]; //remove the item
+    sem_post(&sp->mutex); //unlock the buffer
+    sem_post(&sp->slots); //announce available slot
+    return item;
 }
 
 void * serviceClient(void * dict){
