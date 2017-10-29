@@ -19,7 +19,7 @@
 #define EXIT_BIND_FAILURE 3
 #define EXIT_LISTEN_FAILURE 4
 
-#define MAX_LINE 64
+#define MAX_LINE 512
 
 #define DEFAULT_DICTIONARY "words"
 #define DEFAULT_PORT "12345"
@@ -47,7 +47,7 @@ void sbuf_insert(sbuf_t *sp, int item);
 int sbuf_remove(sbuf_t *sp);
 void * threadMain(void * theQueue);
 int spellChecker(char * word);
-ssize_t myReadLine(int theSocket, char * buffer);
+int myReadLine(int theSocket, char * buffer);
 
 //dictionary variables made global for easy access
 char ** dictionary;
@@ -317,24 +317,37 @@ void * threadMain(void * theQueue){
 
 //this reads from the client until there is no more to say. and splits up the line into tokens
 void serviceClient(int theSocket){
-    ssize_t bytes_read;
+    ssize_t bytes_read; //byte read from client
     char line[MAX_LINE]; //this is the line read from client
-    while ((bytes_read = readLine(theSocket, line, MAX_LINE-1)) > 0){ //continue reading until there is none
-        //this is tokenization of line read to spell check
-        char *token = strtok(line, "\n ");
-        while (token != NULL){
-            printf("%s\n", token);
-            token = strtok(NULL, "\n ");
+    memset(line, '\0', sizeof(line)); //memset helps with debugging
+    while((bytes_read = read(theSocket, line, MAX_LINE)) > 0){ //while there is more to read from the client
+        if ('\n' == line[strlen(line) - 1]){ //get rid of newline
+            line[strlen(line) - 1] = ' ';
         }
-    }
+        char newLine[bytes_read -1];
+        memset(newLine, '\0', sizeof(newLine));
+        strncpy(newLine, line, strlen(line) - 2);
 
+        char *token = strtok(newLine, " "); //token start
+        while (token != NULL){ //while there is more token
+            if (spellChecker(token)){
+                printf("%sThis is correct!\n", token);
+            } else{
+                printf("%s:This is not correct!\n", token);
+            }
+            memset(token, '\0', strlen(token));
+            token = strtok(NULL, " ");
+        }
+        memset(newLine, '\0', strlen(newLine));
+        memset(line, '\0', strlen(line));
+    }
 }
 
 //this is the spellchecker function
 int spellChecker(char * word){
     int i;
     for (i = 0; i < wordsInDict; i++){
-        if (strcmp(word, dictionary[i]) == 0)        
+        if (strncmp(word, dictionary[i], strlen(word) - 1) == 0)        
             return 1;
     }
     return 0;
