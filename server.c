@@ -23,7 +23,7 @@
 
 #define DEFAULT_DICTIONARY "words"
 #define DEFAULT_PORT "12345"
-#define TOK_DELIM "\n"
+#define TOK_DELIM " \n"
 #define WORKER_COUNT 3
 
 typedef struct{ //this is the connected socket queue
@@ -36,21 +36,28 @@ typedef struct{ //this is the connected socket queue
     sem_t items; //semaphore for available items
 } sbuf_t;
 
+//function prototypes
 int getlistenfd(char *);
 ssize_t readLine(int fd, void *buffer, size_t n);
 char ** getDict(char *, int * );
-void * serviceClient(void *);
+void serviceClient(int);
 void sbuf_init(sbuf_t *sp, int n);
 void sbuf_deinit(sbuf_t *sp);
 void sbuf_insert(sbuf_t *sp, int item);
+int sbuf_remove(sbuf_t *sp);
+void * threadMain(void * theQueue);
+int spellChecker(char * word);
+ssize_t myReadLine(int theSocket, char * buffer);
+
+//dictionary variables made global for easy access
+char ** dictionary;
+int wordsInDict = 0;
 
 int main(int argc, char ** argv){
     int listenfd; //listen socket descriptor
     int connectedfd; //connected socket descriptor
     struct sockaddr_storage client_addr; //the client address struct
     socklen_t client_addr_size; //size of client address
-    char line[MAX_LINE]; //this is the line read from the client
-    ssize_t bytes_read; //number of bytes read from readLine
     char client_name[MAX_LINE]; 
     char client_port[MAX_LINE]; 
     char *port; //port configuration string
@@ -74,21 +81,24 @@ int main(int argc, char ** argv){
             printf("There is error in the number of arguments!\n");
             exit(0);
     }
-    //make dictionary data structure available to all threads
-    int wordsInDict = 0;
-    char ** dictionary = getDict(dict, &wordsInDict);
+    //this is the listener socket on the server side
+    listenfd = getlistenfd(port);
 
+    //make dictionary data structure available to all threads
+    dictionary = getDict(dict, &wordsInDict);
+
+    //create the queue for holding incoming connections for the worker threads
+    sbuf_t *theQueue = calloc(7, sizeof(*theQueue)); //allocate memory for theQueue
+    sbuf_init(theQueue, 5); //initialize with 5 slots for theQueue
+    
     //create an array of threads
     pthread_t threadPool[WORKER_COUNT];
 
     int i;
     for (i = 0; i < WORKER_COUNT; i++){
         //Start running the threads
-        pthread_create(&threadPool[i], NULL, &serviceClient, dictionary);
+        pthread_create(&threadPool[i], NULL, &threadMain, theQueue);
     }
-
-    //this is the listener socket on the server side
-    listenfd = getlistenfd(port);
 
     //infinite loop
     for (;;) {
@@ -104,13 +114,11 @@ int main(int argc, char ** argv){
         } else {
             printf("accepted connection from %s:%s\n", client_name, client_port);
         }
-        while ((bytes_read=readLine(connectedfd, line, MAX_LINE-1))>0) {
-          printf("just read %s", line);
-          write(connectedfd, line, bytes_read);
-        }
-        printf("connection closed\n");
-        close(connectedfd);
+
+        //add connected socket to the queue
+        sbuf_insert(theQueue, connectedfd); //sbuf_insert automatically signals new socket in the queue
     }
+
 }
 
 /*
@@ -264,10 +272,12 @@ void sbuf_init(sbuf_t *sp, int n){
    sem_init(&sp->items, 0, 0); //0 items initially
 }
 
+//Clean up buffer sp
 void sbuf_deinit(sbuf_t *sp){
     free(sp->buf);
 }
 
+//Insert item onto the rear of shared buffer sp
 void sbuf_insert(sbuf_t *sp, int item){
     sem_wait(&sp->slots); //sem_wait is P(). wait for available slot
     sem_wait(&sp->mutex); //this thread has the lock now
@@ -276,6 +286,7 @@ void sbuf_insert(sbuf_t *sp, int item){
     sem_post(&sp->items); //announce available item
 }
 
+//Remove and return the first item from buffer sp
 int sbuf_remove(sbuf_t *sp){
     int item;
     sem_wait(&sp->items); //wait for available item
@@ -286,6 +297,45 @@ int sbuf_remove(sbuf_t *sp){
     return item;
 }
 
-void * serviceClient(void * dict){
-    printf("first word: %s\n", ((char **) dict)[0]);
+//the threads created from main will start this function
+void * threadMain(void * theQueue){
+    while(1){ //infinite loop. THE THREAD LIVES FOREVER...until parent process is dead
+        sbuf_t * queuePtr = (sbuf_t *)theQueue; //pointer to casted void theQueue
+        
+        /*
+         * here, sbuf_remove will block the thread until there is an available item
+         * this is possible by sem_wait(&sp->items) in sbuf_remove
+         * if there is a signal of available item, then a thread with this block will wake
+         * and remove a socket from the queue
+         */
+        int theSocket = sbuf_remove(queuePtr);
+        serviceClient(theSocket); //call the serviceClient function to spellcheck until there is no more words
+        close(theSocket); //close this working socket
+        printf("connection closed\n"); //print to the server that the connection closed
+    }
+}
+
+//this reads from the client until there is no more to say. and splits up the line into tokens
+void serviceClient(int theSocket){
+    ssize_t bytes_read;
+    char line[MAX_LINE]; //this is the line read from client
+    while ((bytes_read = readLine(theSocket, line, MAX_LINE-1)) > 0){ //continue reading until there is none
+        //this is tokenization of line read to spell check
+        char *token = strtok(line, "\n ");
+        while (token != NULL){
+            printf("%s\n", token);
+            token = strtok(NULL, "\n ");
+        }
+    }
+
+}
+
+//this is the spellchecker function
+int spellChecker(char * word){
+    int i;
+    for (i = 0; i < wordsInDict; i++){
+        if (strcmp(word, dictionary[i]) == 0)        
+            return 1;
+    }
+    return 0;
 }
