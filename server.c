@@ -41,7 +41,6 @@ int getlistenfd(char *);
 char ** getDict(char *, int * );
 void serviceClient(int);
 void sbuf_init(sbuf_t *sp, int n);
-void sbuf_deinit(sbuf_t *sp);
 void sbuf_insert(sbuf_t *sp, int item);
 int sbuf_remove(sbuf_t *sp);
 void * threadMain(void * theQueue);
@@ -220,11 +219,6 @@ void sbuf_init(sbuf_t *sp, int n){
    sem_init(&sp->items, 0, 0); //0 items initially
 }
 
-//Clean up buffer sp
-void sbuf_deinit(sbuf_t *sp){
-    free(sp->buf);
-}
-
 //Insert item onto the rear of shared buffer sp
 void sbuf_insert(sbuf_t *sp, int item){
     sem_wait(&sp->slots); //sem_wait is P(). wait for available slot
@@ -272,20 +266,25 @@ void serviceClient(int theSocket){
         if ('\n' == line[strlen(line) - 1]){ //get rid of newline
             line[strlen(line) - 1] = ' ';
         }
+
+        //there is a weird bug where the client will type 5 letter word
+        //and this function reads 7 letter word.
+        //Therefore, a new char array is created
+        //to use only the correct number of letters.
         char newLine[bytes_read -1];
         memset(newLine, '\0', sizeof(newLine));
         strncpy(newLine, line, strlen(line) - 2);
 
         char *token = strtok(newLine, " "); //token start
         while (token != NULL){ //while there is more token
-            if (spellChecker(token)){
+            if (spellChecker(token)){ //if the word is in the dictionary
                 char buffer[strlen(token) + 3];
                 memset(buffer, '\0', sizeof(buffer));
                 strcat(buffer, token);
                 strcat(buffer, "OK");
                 send(theSocket, buffer, strlen(buffer), 0);
                 send(theSocket, "\n", 1, 0);
-            } else{
+            } else{ //if not in dictionary
                 char buffer[strlen(token) + 11];
                 memset(buffer, '\0', sizeof(buffer));
                 strcat(buffer, token);
@@ -302,6 +301,8 @@ void serviceClient(int theSocket){
 }
 
 //this is the spellchecker function
+//go through the dictionary file and
+//linearly check for the word
 int spellChecker(char * word){
     int i;
     for (i = 0; i < wordsInDict; i++){
